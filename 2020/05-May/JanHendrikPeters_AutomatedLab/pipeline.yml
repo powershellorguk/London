@@ -1,0 +1,85 @@
+﻿name: $(BuildID)
+variables:
+  - group: BuildEnv
+trigger:
+  - master
+pr:
+  - master
+
+stages:
+- stage: Prerequisites
+  jobs:
+  - job: BuildLab
+    pool:
+      name: OnPremLab
+    continueOnError: false
+    steps:
+      - powershell: '.\Build\prereq.ps1'
+        env:
+          Engine: HyperV
+          Password: $(Password)
+        name: prereq
+        displayName: Download prerequisites
+      - powershell: '.\Build\lab.ps1'
+        errorActionPreference: 'continue'
+        env:
+          Engine: HyperV
+          Password: $(Password)
+        name: lab
+        displayName: Build validation environment
+- stage: ValidateUnit
+  jobs:
+  - job: UnitTests
+    pool:
+      name: OnPremLab
+    continueOnError: true
+    steps:
+      - powershell: '.\Build\validate.ps1 -Type Unit'
+        name: unittests
+        displayName: Run Pester unit tests
+      - task: PublishTestResults@2
+        inputs:
+          testResultsFormat: 'NUnit'
+          testResultsFiles: '*unit-test-results.xml' 
+          failTaskOnFailedTests: true
+- stage: BuildMOFfiles
+  jobs:
+  - job: Mofs
+    pool:
+      name: OnPremLab
+    continueOnError: true
+    steps:
+      - powershell: '.\DSC\BuildConfiguration.ps1'
+        name: buildmofs
+        displayName: Build MOFs
+- stage: ValidateIntegration
+  jobs:
+  - job: IntTests
+    pool:
+      name: OnPremLab
+    steps:
+      - powershell: '.\Build\validate.ps1 -Type Integration'
+        name: integrationtests
+        displayName: Run Pester integration tests
+      - task: PublishTestResults@2
+        inputs:
+          testResultsFormat: 'NUnit'
+          testResultsFiles: '*integration-test-results.xml' 
+          failTaskOnFailedTests: true
+- stage: DeployToProd
+  dependsOn:
+    - ValidateUnit
+    - ValidateIntegration
+  condition: and(succeeded(), eq(variables['build.sourceBranch'], 'refs/heads/master'))
+  jobs:
+  - job: Deploy
+    pool:
+      name: OnPremLab
+    continueOnError: false
+    steps:
+      - powershell: 'Write-Host "Copy MOFS to pull server, push them, ..."'
+        name: prdDeploy
+        displayName: Prod deployment
+      - powershell: 'Remove-Lab -Name DSCValidation -Confirm:$false'
+        name: cleanup
+        displayName: Remove lab environment
